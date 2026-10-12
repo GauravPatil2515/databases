@@ -1721,3 +1721,26 @@ async def test_mapping_property_interface(database_url):
         list_result = await database.fetch_all(query=query)
         assert list_result[0]._mapping["text"] == "example1"
         assert list_result[0]._mapping["completed"] is True
+
+
+@async_adapter
+async def test_transaction_commit_failure_cleans_up_stack():
+    """
+    Test that when commit() raises an exception (e.g. mock commit failure or deferred constraint),
+    the transaction stack and connection lock are properly cleaned up.
+    """
+    async with Database("sqlite:///:memory:") as database:
+        async with database.connection() as connection:
+            transaction = await connection.transaction()
+            # Force commit to fail to simulate a backend constraint failure on COMMIT
+            with patch.object(transaction._transaction, "commit", side_effect=RuntimeError("Commit failed")):
+                with pytest.raises(RuntimeError, match="Commit failed"):
+                    await transaction.commit()
+
+            # Ensure stack is cleared and connection is cleanly usable
+            assert len(connection._transaction_stack) == 0
+            assert transaction._transaction is None
+
+            # New transactions should execute without assertion errors
+            async with connection.transaction():
+                assert len(connection._transaction_stack) == 1
